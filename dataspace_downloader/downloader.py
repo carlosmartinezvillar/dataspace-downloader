@@ -118,8 +118,7 @@ A complete set of query-able parameters for each satellite can be obtained from
 # GLOBAL
 ####################################################################################################
 # OPENS_BASE_URL="https://catalogue.dataspace.copernicus.eu/resto/api/collections/search.json?"
-OPENS_BASE_URL="https://catalogue.dataspace.copernicus.eu/resto/api/collections/Sentinel2/search.json?"
-ODATA_BASE_URL="https://catalogue.dataspace.copernicus.eu/odata/v1/Products"
+OPENS_BASE_URL="https://catalogue.dataspace.copernicus.eu/resto/api/collections/Sentinel2/search.json"
 
 ####################################################################################################
 # CLASSES
@@ -134,26 +133,44 @@ class Downloader:
 		self.instrument  = "MSI"
 		self.productType = "S2MSI2A"
 		self.sensorMode  = None #some "null" some INS-NOBS for S2 ¿?
-		self.bands       = None #<--- INPUT
+		self.bands       = None									 #<--- INPUT
 
 		#JSON RETURN PARAMETERS
 		self.maxRecords = 20
 		self.page       = 1 #current page 1-indexed
 		self.sortParam  = "startDate"
+		self.sortOrder  = "ascending"
 
 		#AOI PARAMETERS
 		self.cloudCover     = None #e.g. [0,10] #<--- INPUT
-		self.startDate      = None #e.g. 2021-10-01T21:37:00Z #<--- INPUT
-		self.completionDate = None #<--- INPUT
-		self.lon            = None #EPSG:4326 e.g. 21.01 #<--- INPUT
-		self.lat            = None #<--- INPUT
-		self.geometry       = None #<--- INPUT
+		self.startDate      = None #e.g. 2021-10-01T21:37:00Z 	#<--- INPUT
+		self.completionDate = None 								#<--- INPUT
+		self.lon            = None #EPSG:4326 e.g. 21.01 		#<--- INPUT
+		self.lat            = None 								#<--- INPUT
+		self.geometry       = None 								#<--- INPUT
 		self.box            = None #&box=west,south,east,north
 		self.radius         = None 
+
+
+		self.parse_yaml_parameters()
+		self.check_yaml_parameters()
+
+		self.payload = {
+			'productType':"S2MSI2A",
+			'startDate':self.startDate,
+			'completionDate':self.completionDate,			
+			'geometry':self.geometry,
+			'cloudCover':self.cloudCover,			
+			'sortParam':"startDate",
+			'sortOrder':"ascending",
+			'maxRecords':self.maxRecords,
+			'page':self.page		
+		}
 
 		#DATA/ITERATION OBJECTS
 		self.titles = None #["*.SAFE"]
 		self.s3_ids = None #["/eodata/Sentinel-2/MSI/.../*.SAFE"]
+
 
 	def parse_yaml_parameters(self):
 		'''
@@ -185,6 +202,7 @@ class Downloader:
 
 
 	def send_http(self):
+
 		pass
 
 
@@ -224,6 +242,34 @@ class Downloader:
 
 	def search(self):
 		pass
+
+		next_page = True
+
+		#First request
+		resp = requests.get(OPENS_BASE_URL,params=self.payload) #HTTPs request
+
+		#Check response
+		if resp.status_code != 200: #check correct response
+			print(resp.text)
+			return
+
+		#string to dict
+		resp_json = resp.json()
+
+		#features>0 : empty list?
+		print("%i products found." % len(resp_json['features']))
+		if len(resp_json['features']) == 0:
+			return
+
+
+		# Get a page
+		for f in resp_json['features']:
+			polygons += [f['geometry']]
+			titles   += [f['properties']['title']]
+			s3_urls  += [f['properties']['productIdentifier']]
+			# cloudcov += [f['properties']['cloudCover']]
+
+		# More pages?
 
 
 	def download(self):
