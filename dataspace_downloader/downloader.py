@@ -6,7 +6,7 @@ import requests
 import argparse
 import multiprocessing
 import subprocess
-from tqdm import tqdm
+# from tqdm import tqdm
 import time
 
 """
@@ -124,7 +124,7 @@ ODATA_BASE_URL="https://catalogue.dataspace.copernicus.eu/odata/v1/Products"
 ####################################################################################################
 # CLASSES
 ####################################################################################################
-class Retriever:
+class Downloader:
 	"""
 	Explanation of the class...
 	"""
@@ -133,8 +133,8 @@ class Retriever:
 		#SATELLITE PARAMETERS
 		self.instrument  = "MSI"
 		self.productType = "S2MSI2A"
-		self.sensorMode  = None #some "null" some INS-NOBS for S2 ¿? <- unused
-		self.bands       = None
+		self.sensorMode  = None #some "null" some INS-NOBS for S2 ¿?
+		self.bands       = None #<--- INPUT
 
 		#JSON RETURN PARAMETERS
 		self.maxRecords = 20
@@ -142,14 +142,14 @@ class Retriever:
 		self.sortParam  = "startDate"
 
 		#AOI PARAMETERS
-		self.cloudCover     = None #e.g. [0,10]
-		self.startDate      = None #e.g. 2021-10-01T21:37:00Z
-		self.completionDate = None
-		self.lon            = None #EPSG:4326 e.g. 21.01
-		self.lat            = None
-		self.geometry       = None
-		self.box            = None #&box=west,south,east,north <- unused
-		self.radius         = None #<- unused
+		self.cloudCover     = None #e.g. [0,10] #<--- INPUT
+		self.startDate      = None #e.g. 2021-10-01T21:37:00Z #<--- INPUT
+		self.completionDate = None #<--- INPUT
+		self.lon            = None #EPSG:4326 e.g. 21.01 #<--- INPUT
+		self.lat            = None #<--- INPUT
+		self.geometry       = None #<--- INPUT
+		self.box            = None #&box=west,south,east,north
+		self.radius         = None 
 
 		#DATA/ITERATION OBJECTS
 		self.titles = None #["*.SAFE"]
@@ -184,7 +184,7 @@ class Retriever:
 		pass
 
 
-	def search_http(self):
+	def send_http(self):
 		pass
 
 
@@ -221,22 +221,25 @@ class Retriever:
 			subdir = f"L2A_{tile}_{granule}_{datastrip}"
 			subdirs.append(subdir)
 
-	def download_product(self):
+
+	def search(self):
 		pass
 
 
+	def download(self):
+		pass
 
 
 
 if __name__ == '__main__':
 
 	#SET AUTH FROM ENV OR YAML
-	username = os.getenv("DS_USER")
-	password = os.getenv("DS_PASS")
+	# username = os.getenv("DS_USER")
+	# password = os.getenv("DS_PASS")
 	# username =
 	# password = 
 
-	R = Retriever()
+	D = Downloader()
 
 
 
