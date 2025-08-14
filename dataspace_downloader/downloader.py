@@ -146,14 +146,8 @@ class Downloader():
 		# self.sensorMode  = None #some "null" some INS-NOBS for S2 ¿?
 		self.bands       = None									#<--- INPUT
 
-		#JSON RETURN PARAMETERS
-		self.maxRecords = 20
-		self.page       = 1 #current page, 1-indexed
-		self.sortParam  = "startDate"
-		self.sortOrder  = "ascending"
-
 		#AOI PARAMETERS
-		self.cloudCover     = None #e.g. [0,10] #<--- INPUT
+		self.cloudCover     = None #e.g. [0,10] 				#<--- INPUT
 		self.startDate      = None #e.g. 2021-10-01T21:37:00Z 	#<--- INPUT
 		self.completionDate = None 								#<--- INPUT
 		self.lon            = None #EPSG:4326 e.g. 21.01 		#<--- INPUT
@@ -162,6 +156,11 @@ class Downloader():
 		# self.box            = None #&box=west,south,east,north
 		# self.radius         = None 
 
+		#JSON RETURN PARAMETERS
+		self.maxRecords = 20
+		self.page       = 1 #current page, 1-indexed
+		self.sortParam  = "startDate"
+		self.sortOrder  = "ascending"
 
 		self.parse_yaml_parameters()
 		self.check_yaml_parameters()
@@ -207,10 +206,6 @@ class Downloader():
 		pass
 
 
-	def parse_json_response(self):
-		pass
-
-
 	def download_metadata(self):
 		'''
 		Download MTD.xml for all in product_list
@@ -234,6 +229,7 @@ class Downloader():
 			"esa:",self.out_dir,"-P",
 			"--transfers",RCLONE_MAX,"--dry-run"])
 
+		#delete temp list
 		os.remove(temp_path)
 
 
@@ -254,7 +250,7 @@ class Downloader():
 		Intermediate folder containing the band images.
 		'''
 		for product in self.titles:
-			granule,datastrip = parse_xml(f"{DATA_DIR}/{product}/MTD_MSIL2A.xml")
+			granule,datastrip = self.parse_xml(f"{DATA_DIR}/{product}/MTD_MSIL2A.xml")
 			date = product[11:26]
 			tile = product[38:44]
 			subdir = f"L2A_{tile}_{granule}_{datastrip}"
@@ -291,7 +287,7 @@ class Downloader():
 				self.s3_ids.append(f['properties']['productIdentifier'])
 				# self.cloudcov.append(f['properties']['cloudCover'])
 				# self.snowcov.append(f['properties']['snowCover'])
-				
+
 			tags  = [l['rel'] for l in resp_json['properties']['links']]
 
 			#no more pages?
@@ -304,10 +300,20 @@ class Downloader():
 			resp_json = resp.json()
 			self.page += 1
 
+		#good enough...
+
 
 	def download(self):
-		pass
+		
+		#prepare metadata
+		self.download_metadata()
+		self.build_intermediate_dir()
 
+		#write temp
+
+		#download
+
+		#delete temp
 
 
 if __name__ == '__main__':
