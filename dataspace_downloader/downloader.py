@@ -120,24 +120,35 @@ A complete set of query-able parameters for each satellite can be obtained from
 # OPENS_BASE_URL="https://catalogue.dataspace.copernicus.eu/resto/api/collections/search.json?"
 OPENS_BASE_URL="https://catalogue.dataspace.copernicus.eu/resto/api/collections/Sentinel2/search.json"
 
+
+mtd_ns = {
+	'n1':"https://psd-14.sentinel2.eo.esa.int/PSD/User_Product_Level-2A.xsd",
+	'other':"http://www.w3.org/2001/XMLSchema-instance",
+	'another':"https://psd-14.sentinel2.eo.esa.int/PSD/User_Product_Level-2A.xsd"
+}
+
+RCLONE_MAX = 16
 ####################################################################################################
 # CLASSES
 ####################################################################################################
-class Downloader:
+class Downloader():
 	"""
 	Explanation of the class...
 	"""
-	def __init__(self):
+	def __init__(self,input_yml,out_dir):
+
+		self.input_yml = input_yml
+		self.out_dir   = out_dir
 
 		#SATELLITE PARAMETERS
 		self.instrument  = "MSI"
 		self.productType = "S2MSI2A"
-		self.sensorMode  = None #some "null" some INS-NOBS for S2 ¿?
-		self.bands       = None									 #<--- INPUT
+		# self.sensorMode  = None #some "null" some INS-NOBS for S2 ¿?
+		self.bands       = None									#<--- INPUT
 
 		#JSON RETURN PARAMETERS
 		self.maxRecords = 20
-		self.page       = 1 #current page 1-indexed
+		self.page       = 1 #current page, 1-indexed
 		self.sortParam  = "startDate"
 		self.sortOrder  = "ascending"
 
@@ -148,8 +159,8 @@ class Downloader:
 		self.lon            = None #EPSG:4326 e.g. 21.01 		#<--- INPUT
 		self.lat            = None 								#<--- INPUT
 		self.geometry       = None 								#<--- INPUT
-		self.box            = None #&box=west,south,east,north
-		self.radius         = None 
+		# self.box            = None #&box=west,south,east,north
+		# self.radius         = None 
 
 
 		self.parse_yaml_parameters()
@@ -168,8 +179,10 @@ class Downloader:
 		}
 
 		#DATA/ITERATION OBJECTS
-		self.titles = None #["*.SAFE"]
-		self.s3_ids = None #["/eodata/Sentinel-2/MSI/.../*.SAFE"]
+		self.titles   = [] #["*.SAFE"]
+		self.s3_ids   = [] #["/eodata/Sentinel-2/MSI/.../*.SAFE"]
+		self.subdirs  = [] #["L2A_TNNLLL_ANNNNNN_YYYYMMDDTHHMMSS"]
+		self.polygons = [] #[{"type":"Polygon","coordinates":[[[]]]}]
 
 
 	def parse_yaml_parameters(self):
@@ -194,18 +207,6 @@ class Downloader:
 		pass
 
 
-	def build_http_uri(self):
-		"""
-		Uses the set parameters in object to build the openSearch/uri query.
-		"""
-		pass
-
-
-	def send_http(self):
-
-		pass
-
-
 	def parse_json_response(self):
 		pass
 
@@ -214,62 +215,94 @@ class Downloader:
 		'''
 		Download MTD.xml for all in product_list
 		'''
-		pass
+		#Make directories
+		# for folder in self.titles:
+			# os.mkdir(f"{self.out_dir}/{folder}")
+
+		#Set download list
+		remote_paths = [f"{path}/MTD_*.xml" for path in self.s3_ids]
+
+		#Write temp list file
+		temp_path = f"{self.out_dir}/mtd_temp.txt"
+		with open(temp_path,'w') as fp:
+			fp.writelines(remote_paths)
+
+		#Download
+		proc0 = sp.run([
+			"rclone","copy",
+			"--include-from",temp_path,
+			"esa:",self.out_dir,"-P",
+			"--transfers",RCLONE_MAX,"--dry-run"])
+
+		os.remove(temp_path)
 
 
-	def parse_xml(self):
+	def parse_xml(self,path):
 		'''
-		parse a MTD.xml
+		parse a MTD_MSIL2A.xml
 		'''
-		pass
+		# get datastrip and granule
+		root      = ET.parse(path).getroot()
+		prod_info = root.find('n1:General_Info',namespaces=mtd_ns).find('Product_Info')
+		granule   = prod_info.find('Product_Organisation').find('Granule_List').find('Granule')
+		datastrip = granule.attrib['datastripIdentifier'].split('_')[-2][1:]
+		return granule,datastrip
 
 
 	def build_intermediate_dir(self):
 		'''
 		Intermediate folder containing the band images.
 		'''
-		pass
-
-		subdirs = []
-
-		for product in product_list:
-			datastrip,granule = parse_xml(f"{DATA_DIR}/{product}/MTD_MSIL2A.xml")
-			tile   = product[0:1]
-
+		for product in self.titles:
+			granule,datastrip = parse_xml(f"{DATA_DIR}/{product}/MTD_MSIL2A.xml")
+			date = product[11:26]
+			tile = product[38:44]
 			subdir = f"L2A_{tile}_{granule}_{datastrip}"
-			subdirs.append(subdir)
+			self.subdirs.append(subdir)
 
 
 	def search(self):
-		pass
-
-		next_page = True
 
 		#First request
 		resp = requests.get(OPENS_BASE_URL,params=self.payload) #HTTPs request
 
-		#Check response
+		#Check response 200
 		if resp.status_code != 200: #check correct response
 			print(resp.text)
 			return
+		#404:Not found: incorrect base uri
+		#400:Bad request: incorrect query
+
 
 		#string to dict
 		resp_json = resp.json()
-
-		#features>0 : empty list?
 		print("%i products found." % len(resp_json['features']))
+
+		#200 but features len() 0
 		if len(resp_json['features']) == 0:
 			return
 
+		while True:
 
-		# Get a page
-		for f in resp_json['features']:
-			polygons += [f['geometry']]
-			titles   += [f['properties']['title']]
-			s3_urls  += [f['properties']['productIdentifier']]
-			# cloudcov += [f['properties']['cloudCover']]
+			#parse page
+			for f in resp_json['features']:
+				self.polygons.append(f['geometry'])
+				self.titles.append(f['properties']['title'])
+				self.s3_ids.append(f['properties']['productIdentifier'])
+				# self.cloudcov.append(f['properties']['cloudCover'])
+				# self.snowcov.append(f['properties']['snowCover'])
+				
+			tags  = [l['rel'] for l in resp_json['properties']['links']]
 
-		# More pages?
+			#no more pages?
+			if 'next' not in tags:
+				break
+
+			#else, get next page
+			next_page = resp_json['properties']['links'][tags.index('next')]['href']
+			resp      = requests.get(next_page)
+			resp_json = resp.json()
+			self.page += 1
 
 
 	def download(self):
@@ -279,13 +312,8 @@ class Downloader:
 
 if __name__ == '__main__':
 
-	#SET AUTH FROM ENV OR YAML
-	# username = os.getenv("DS_USER")
-	# password = os.getenv("DS_PASS")
-	# username =
-	# password = 
+	D = Downloader("../sample.yml")
 
-	D = Downloader()
 
 
 
