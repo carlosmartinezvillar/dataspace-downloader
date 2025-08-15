@@ -135,10 +135,10 @@ class Downloader():
 	"""
 	Explanation of the class...
 	"""
-	def __init__(self,input_yml,out_dir):
+	def __init__(self,input_yaml,out_dir):
 
-		self.input_yml = input_yml
-		self.out_dir   = out_dir
+		self.input_yaml = input_yaml
+		self.out_dir    = out_dir
 
 		#SATELLITE PARAMETERS
 		self.instrument  = "MSI"
@@ -158,7 +158,7 @@ class Downloader():
 
 		#JSON RETURN PARAMETERS
 		self.maxRecords = 20
-		self.page       = 1 #current page, 1-indexed
+		selsf.page       = 1 #current page, 1-indexed
 		self.sortParam  = "startDate"
 		self.sortOrder  = "ascending"
 
@@ -188,7 +188,23 @@ class Downloader():
 		'''
 		Set bands, cloudCover, startDate, completionDate, lon and lat or geometry
 		'''
-		pass
+		#check file exists here instead...
+
+		try:
+			with open(self.input_yaml,'r') as fp:
+				yaml_data = yaml.safe_load(fp)
+		except FileNotFoundError:
+			print(f"File {self.input_yml} not found.")
+		except yaml.YAMLError as e:
+			print(f"Error parsing YAML: {e}")
+
+
+		try: #something along these lines... 
+			self.cloudCover = yaml_data['cloudCover']
+		except KeyError:
+			print(f"cloudCover not defined in {self.input_yml}.\nSetting default values ([0,5])")
+			self.cloudCover = "[0,5]"
+
 
 
 	def check_yaml_parameters(self):
@@ -201,7 +217,7 @@ class Downloader():
 
 	def check_rclone_credentials(self):
 		'''
-		Do this without stdout.
+		Do this without stdout.?
 		'''
 		pass
 
