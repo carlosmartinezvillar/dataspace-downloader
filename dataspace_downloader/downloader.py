@@ -162,20 +162,21 @@ class Downloader():
 		self.sortParam  = "startDate"
 		self.sortOrder  = "ascending"
 
-		self.parse_yaml_parameters()
-		self.check_yaml_parameters()
+		self.parameters = None
+		self.parse_parameters()
+		self.check_parameters()
 
-		self.payload = {
-			'productType':"S2MSI2A",
-			'startDate':self.startDate,
-			'completionDate':self.completionDate,			
-			'geometry':self.geometry,
-			'cloudCover':self.cloudCover,			
-			'sortParam':"startDate",
-			'sortOrder':"ascending",
-			'maxRecords':self.maxRecords,
-			'page':self.page		
-		}
+		# self.payload = {
+		# 	'productType':"S2MSI2A",
+		# 	'startDate':self.startDate,
+		# 	'completionDate':self.completionDate,			
+		# 	'geometry':self.geometry,
+		# 	'cloudCover':self.cloudCover,			
+		# 	'sortParam':"startDate",
+		# 	'sortOrder':"ascending",
+		# 	'maxRecords':self.maxRecords,
+		# 	'page':self.page		
+		# }
 
 		#DATA/ITERATION OBJECTS
 		self.titles   = [] #["*.SAFE"]
@@ -184,7 +185,7 @@ class Downloader():
 		self.polygons = [] #[{"type":"Polygon","coordinates":[[[]]]}]
 
 
-	def parse_yaml_parameters(self):
+	def parse_parameters(self):
 		'''
 		Set bands, cloudCover, startDate, completionDate, lon and lat or geometry
 		'''
@@ -197,23 +198,43 @@ class Downloader():
 			print(f"File {self.input_yml} not found.")
 		except yaml.YAMLError as e:
 			print(f"Error parsing YAML: {e}")
+		self.parameters = yaml_data
 
 
-		try: #something along these lines... 
-			self.cloudCover = yaml_data['cloudCover']
-		except KeyError:
-			print(f"cloudCover not defined in {self.input_yml}.\nSetting default values ([0,5])")
-			self.cloudCover = "[0,5]"
-
-
-
-	def check_yaml_parameters(self):
+	def check_parameters(self):
 		'''
 		Check parameters are correct and skip if missing.
 		Set a minimum number of parameters for a reasonable search.
 		'''
-		pass
 
+		#1. cloud cover
+		if "cloudCover" in self.parameters:
+
+			self.cloudCover = self.parameters['cloudCover']
+		else:
+			self.cloudCover = "[0,5]"
+
+		#2. dates and date format
+		if "startDate" in self.parameters:
+		else:
+
+		if "completionDate" in self.parameters:
+
+		else:
+
+		#3.aoi
+		# Set in an order useful for user feedback I suppose...
+		if ("lon" in self.parameters and "lat" self.parameters) or "geometry" in self.parameters:
+			#check lon,lat
+
+			#check geometry
+		else:
+			#error
+			print("Search area not defined. Set 'geometry' or 'lon' and 'lat' \
+				in the configuration yaml file.")
+
+
+		#4. bands
 
 	def check_rclone_credentials(self):
 		'''
