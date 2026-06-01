@@ -99,7 +99,7 @@ class Downloader():
 
 		#JSON RETURN PARAMETERS
 		self.maxRecords = 20
-		self.page       = 1 #current page, 1-indexed
+		self.page       = 0 #current page, 1-indexed
 		self.sortParam  = "startDate"
 		self.sortOrder  = "ascending"
 
@@ -108,18 +108,6 @@ class Downloader():
 		self.parse_yaml()
 		self.check_yaml_inputs()
 
-
-		# self.payload = {
-		# 	'productType':self.productType,
-		# 	'startDate':self.startDate,
-		# 	'completionDate':self.completionDate,			
-		# 	'geometry':self.geometry,
-		# 	'cloudCover':self.cloudCover,			
-		# 	'sortParam':"startDate",
-		# 	'sortOrder':"ascending",
-		# 	'maxRecords':self.maxRecords,
-		# 	'page':self.page		
-		# }
 
 		#DATA/ITERATION OBJECTS
 		self.titles   = [] #["*.SAFE"]
@@ -154,7 +142,7 @@ class Downloader():
 		if "cloudCover" in self.file_parameters:
 			self.cloudCover = self.file_parameters['cloudCover']
 		else:
-			self.cloudCover = "[0,5]"
+			self.cloudCover = "5.00"
 
 		#2. dates and date format
 		if "startDate" in self.file_parameters:
@@ -239,6 +227,22 @@ class Downloader():
 
 	def build_odata_query(self):
 
+		collection = "Collection/Name eq 'SENTINEL-2'"
+		producttype = f"Attributes/OData.CSC.StringAttribute/any(att:att/Name eq 'productType' and att/OData.CSC.StringAttribute/Value eq '{self.productType}')" 
+		aoi = f"OData.CSC.Intersects(area=geography'SRID=4326;{self.geometry}')"
+		clouds = f"Attributes/OData.CSC.DoubleAttribute/any(att:att/Name eq 'cloudCover' and att/OData.CSC.DoubleAttribute/Value le {self.cloudCover})"
+		date_start = f"ContentDate/Start gt {self.startDate}"
+		date_final = f"ContentDate/Start lt {self.completionDate}"
+
+		filters_str = " and ".join([collection,producttype,aoi,clouds,date_start,date_final])
+
+		req_filter = f"$filter={filters_str}"
+		req_top    = f"$top={self.maxRecords}"
+		req_skip   = f"$skip={self.page}"
+		req_count  = "$count=True"
+		req_order  = "$orderby=ContentDate/Start desc"
+
+		req_final = "&".join([req_filter,req_top,req_skip,req_count])
 
 
 	def search_odata(self):
