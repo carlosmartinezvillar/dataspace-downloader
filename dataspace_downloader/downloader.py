@@ -10,6 +10,313 @@ import subprocess
 import time
 
 """
+$filter=Collection/Name eq 'SENTINEL-2'
+
+$filter=ContentDate/Start gt 2019-05-15T00:00:00.000Z and ContentDate/Start lt 2019-05-16T00:00:00.000Z
+
+$filter=OData.CSC.Intersects(area=geography'SRID=4326;POLYGON((
+12.655118166047592 47.44667197521409,21.39065656328509 48.347694733853245,
+28.334291357162826 41.877123516783655,17.47086198383573 40.35854475076158,
+12.655118166047592 47.44667197521409))') 
+and ContentDate/Start gt 2022-05-20T00:00:00.000Z and ContentDate/Start lt 2022-05-21T00:00:00.000Z
+
+$filter=OData.CSC.Intersects(area=geography'SRID=4326;POINT(-0.5319577002158441 28.65487836189358)')
+ and Collection/Name eq 'SENTINEL-1'
+ &$top=20
+
+ $filter=Collection/Name eq 'SENTINEL-2'
+  and Attributes/OData.CSC.DoubleAttribute/any(att:att/Name eq 'cloudCover' and att/OData.CSC.DoubleAttribute/Value le 40.00)
+
+
+Collection/Name%20eq%20%27SENTINEL-2%27
+%20and%20
+Attributes/OData.CSC.DoubleAttribute/any(att:att/Name%20eq%20%27cloudCover%27%20and%20att/OData.CSC.DoubleAttribute/Value%20lt%2010.00)
+%20and%20
+Attributes/OData.CSC.StringAttribute/any(att:att/Name%20eq%20%27productType%27%20and%20att/OData.CSC.StringAttribute/Value%20eq%20%27S2MSI2A%27)
+%20and%20
+ContentDate/Start%20gt%202022-05-03T00:00:00.000Z
+%20and%20
+ContentDate/Start%20lt%202022-05-03T04:00:00.000Z
+&$top=10
+
+$orderby=ContentDate/Start desc
+
+$skip=20
+
+if "@OData.nextLink" in resp, follow to next page. Same level as @odata.context and "value":[]
+
+"@odata.count" has overall count.
+
+-----
+For each item in value [], get
+""
+"Name"
+"S3Path"
+"Footprint"
+"""
+
+####################################################################################################
+# GLOBAL
+####################################################################################################
+ODATA_BASE_URL = "https://catalogue.dataspace.copernicus.eu/odata/v1/Products?"
+# ODATA_BASE_URL = "https://catalogue.dataspace.copernicus.eu/odata/v1/Products?$filter="
+# ODATA_BASE_URL = "https://catalogue.dataspace.copernicus.eu/odata/v1/Products?$filter=Collection/Name eq 'SENTINEL-2"
+
+mtd_namespace = {
+	'n1':"https://psd-14.sentinel2.eo.esa.int/PSD/User_Product_Level-2A.xsd",
+	'other':"http://www.w3.org/2001/XMLSchema-instance",
+	'another':"https://psd-14.sentinel2.eo.esa.int/PSD/User_Product_Level-2A.xsd"
+}
+
+RCLONE_MAX = 16
+####################################################################################################
+# CLASSES
+####################################################################################################
+class Downloader():
+	"""
+	Explanation of the class...
+	"""
+	def __init__(self,input_yaml,out_dir):
+
+		self.input_yaml = input_yaml
+		self.out_dir    = out_dir
+
+		#SATELLITE PARAMETERS
+		self.instrument  = "MSI"
+		self.productType = "S2MSI2A"
+		self.sensorMode  = None #some "null" some INS-NOBS for S2 ¿?
+		self.bands       = None									#<--- INPUT YAML
+
+		#AOI PARAMETERS
+		self.cloudCover     = None #e.g. [0,10] 				#<--- INPUT YAML
+		self.startDate      = None #e.g. 2021-10-01T21:37:00Z 	#<--- INPUT YAML
+		self.completionDate = None 								#<--- INPUT YAML
+		self.lon            = None #EPSG:4326 e.g. 21.01 		#<--- INPUT YAML
+		self.lat            = None 								#<--- INPUT YAML
+		self.geometry       = None 								#<--- INPUT YAML
+		self.box            = None #&box=west,south,east,north
+		self.radius         = None 
+
+		#JSON RETURN PARAMETERS
+		self.maxRecords = 20
+		self.page       = 1 #current page, 1-indexed
+		self.sortParam  = "startDate"
+		self.sortOrder  = "ascending"
+
+		# LOAD SEARCH PARAMETERS/YAML
+		self.file_parameters = None
+		self.parse_yaml()
+		self.check_yaml_inputs()
+
+
+		# self.payload = {
+		# 	'productType':self.productType,
+		# 	'startDate':self.startDate,
+		# 	'completionDate':self.completionDate,			
+		# 	'geometry':self.geometry,
+		# 	'cloudCover':self.cloudCover,			
+		# 	'sortParam':"startDate",
+		# 	'sortOrder':"ascending",
+		# 	'maxRecords':self.maxRecords,
+		# 	'page':self.page		
+		# }
+
+		#DATA/ITERATION OBJECTS
+		self.titles   = [] #["*.SAFE"]
+		self.s3_ids   = [] #["/eodata/Sentinel-2/MSI/.../*.SAFE"]
+		self.subdirs  = [] #["L2A_TNNLLL_ANNNNNN_YYYYMMDDTHHMMSS"]
+		self.polygons = [] #[{"type":"Polygon","coordinates":[[[]]]}]
+
+
+	def parse_yaml(self):
+		'''
+		Set bands, cloudCover, startDate, completionDate, lon and lat or geometry
+		'''
+
+		#check file exists
+		try:
+			with open(self.input_yaml,'r') as fp:
+				yaml_data = yaml.safe_load(fp)
+		except FileNotFoundError:
+			print(f"File {self.input_yml} not found.")
+		except yaml.YAMLError as e:
+			print(f"Error parsing YAML: {e}")
+		self.file_parameters = yaml_data
+
+
+	def check_yaml_inputs(self):
+		'''
+		Check parameters are correct and leave as None if missing.
+		TODO: Missing further checks.
+		'''
+
+		#1. cloud cover
+		if "cloudCover" in self.file_parameters:
+			self.cloudCover = self.file_parameters['cloudCover']
+		else:
+			self.cloudCover = "[0,5]"
+
+		#2. dates and date format
+		if "startDate" in self.file_parameters:
+			self.startDate = self.file_parameters['startDate']
+
+		if "completionDate" in self.file_parameters:
+			self.completionDate = self.file_parameters['completionDate']
+
+		#3.aoi -- Set in order useful for user feedback
+		# check lon,lat
+		if ("lon" in self.file_parameters and "lat" self.file_parameters):
+			self.lon = self.file_parameters['lon']
+			self.lat = self.file_parameters['lat']
+
+		#check geometry
+		if "geometry" in self.file_parameters:
+			self.geometry = self.file_parameters['geometry']
+
+		if self.geometry==None and self.lon==None and self.lat==None:
+			#nothing set
+			print("Search area not defined. Set 'geometry' or 'lon' and 'lat' \
+				in the configuration yaml file.")
+
+		#4. bands
+		if "bands" in self.file_parameters:
+			self.bands = self.file_parameters['bands']
+
+
+	def check_rclone_credentials(self):
+		'''
+		Do this without stdout.?
+		'''
+		pass
+
+
+	def download_metadata(self):
+		'''
+		Download MTD.xml for all in product_list
+		'''
+		#Set download list
+		remote_paths = [f"{path}/MTD_*.xml" for path in self.s3_ids]
+
+		#Write temp list file
+		temp_path = f"{self.out_dir}/mtd_temp.txt"
+		with open(temp_path,'w') as fp:
+			fp.writelines(remote_paths)
+
+		#Download
+		proc0 = sp.run([
+			"rclone","copy",
+			"--include-from",temp_path,
+			"esa:",self.out_dir,"-P",
+			"--transfers",RCLONE_MAX,"--dry-run"])
+
+		#delete temp list
+		os.remove(temp_path)
+
+
+	def parse_xml(self,path):
+		'''
+		parse a MTD_MSIL2A.xml
+		'''
+		# get datastrip and granule
+		root      = ET.parse(path).getroot()
+		prod_info = root.find('n1:General_Info',namespaces=mtd_namespace).find('Product_Info')
+		granule   = prod_info.find('Product_Organisation').find('Granule_List').find('Granule')
+		datastrip = granule.attrib['datastripIdentifier'].split('_')[-2][1:]
+		return granule,datastrip
+
+
+	def build_intermediate_dir(self):
+		'''
+		Intermediate folder containing the band images.
+		'''
+		for product in self.titles:
+			granule,datastrip = self.parse_xml(f"{DATA_DIR}/{product}/MTD_MSIL2A.xml")
+			date = product[11:26]
+			tile = product[38:44]
+			subdir = f"L2A_{tile}_{granule}_{datastrip}"
+			self.subdirs.append(subdir)
+
+
+	def build_odata_query(self):
+
+
+
+	def search_odata(self):
+		pass
+
+
+	def search(self):
+
+		#First request
+		resp = requests.get(OPENS_BASE_URL,params=self.payload) #HTTPs request
+
+		#Check response 200
+		if resp.status_code != 200: #check correct response
+			print(resp.text)
+			return
+		#404:Not found: incorrect base uri
+		#400:Bad request: incorrect query
+
+
+		#string to dict
+		resp_json = resp.json()
+		print("%i products found." % len(resp_json['features']))
+
+		#200 but features len() 0
+		if len(resp_json['features']) == 0:
+			return
+
+		while True:
+
+			#parse page
+			for f in resp_json['features']:
+				self.polygons.append(f['geometry'])
+				self.titles.append(f['properties']['title'])
+				self.s3_ids.append(f['properties']['productIdentifier'])
+				# self.cloudcov.append(f['properties']['cloudCover'])
+				# self.snowcov.append(f['properties']['snowCover'])
+
+			tags  = [l['rel'] for l in resp_json['properties']['links']]
+
+			#no more pages?
+			if 'next' not in tags:
+				break
+
+			#else, get next page
+			next_page = resp_json['properties']['links'][tags.index('next')]['href']
+			resp      = requests.get(next_page)
+			resp_json = resp.json()
+			self.page += 1
+
+		#good enough...
+
+
+	def download(self):
+		
+		#Make directories
+		for folder in self.titles:
+			os.mkdir(f"{self.out_dir}/{folder}")
+
+		#prepare metadata
+		self.download_metadata()
+		self.build_intermediate_dir()
+
+		#write temp
+
+		#download
+
+		#delete temp
+
+
+if __name__ == '__main__':
+
+	D = Downloader("../sample.yml")
+
+
+
+
+
+"""
 # BASE QUERY
 	http://catalogue.dataspace.copernicus.eu/resto/api/collections/search.json?
 
@@ -113,253 +420,6 @@ A complete set of query-able parameters for each satellite can be obtained from
 	https://catalogue.dataspace.copernicus.eu/resto/api/collections/Sentinel3/describe.xml
 	https://catalogue.dataspace.copernicus.eu/resto/api/collections/Sentinel5P/describe.xml	
 """
-
-####################################################################################################
-# GLOBAL
-####################################################################################################
-# OPENS_BASE_URL="https://catalogue.dataspace.copernicus.eu/resto/api/collections/search.json?"
-OPENS_BASE_URL="https://catalogue.dataspace.copernicus.eu/resto/api/collections/Sentinel2/search.json"
-
-
-mtd_ns = {
-	'n1':"https://psd-14.sentinel2.eo.esa.int/PSD/User_Product_Level-2A.xsd",
-	'other':"http://www.w3.org/2001/XMLSchema-instance",
-	'another':"https://psd-14.sentinel2.eo.esa.int/PSD/User_Product_Level-2A.xsd"
-}
-
-RCLONE_MAX = 16
-####################################################################################################
-# CLASSES
-####################################################################################################
-class Downloader():
-	"""
-	Explanation of the class...
-	"""
-	def __init__(self,input_yaml,out_dir):
-
-		self.input_yaml = input_yaml
-		self.out_dir    = out_dir
-
-		#SATELLITE PARAMETERS
-		self.instrument  = "MSI"
-		self.productType = "S2MSI2A"
-		# self.sensorMode  = None #some "null" some INS-NOBS for S2 ¿?
-		self.bands       = None									#<--- INPUT
-
-		#AOI PARAMETERS
-		self.cloudCover     = None #e.g. [0,10] 				#<--- INPUT
-		self.startDate      = None #e.g. 2021-10-01T21:37:00Z 	#<--- INPUT
-		self.completionDate = None 								#<--- INPUT
-		self.lon            = None #EPSG:4326 e.g. 21.01 		#<--- INPUT
-		self.lat            = None 								#<--- INPUT
-		self.geometry       = None 								#<--- INPUT
-		# self.box            = None #&box=west,south,east,north
-		# self.radius         = None 
-
-		#JSON RETURN PARAMETERS
-		self.maxRecords = 20
-		selsf.page       = 1 #current page, 1-indexed
-		self.sortParam  = "startDate"
-		self.sortOrder  = "ascending"
-
-		self.parameters = None
-		self.parse_parameters()
-		self.check_parameters()
-
-		# self.payload = {
-		# 	'productType':"S2MSI2A",
-		# 	'startDate':self.startDate,
-		# 	'completionDate':self.completionDate,			
-		# 	'geometry':self.geometry,
-		# 	'cloudCover':self.cloudCover,			
-		# 	'sortParam':"startDate",
-		# 	'sortOrder':"ascending",
-		# 	'maxRecords':self.maxRecords,
-		# 	'page':self.page		
-		# }
-
-		#DATA/ITERATION OBJECTS
-		self.titles   = [] #["*.SAFE"]
-		self.s3_ids   = [] #["/eodata/Sentinel-2/MSI/.../*.SAFE"]
-		self.subdirs  = [] #["L2A_TNNLLL_ANNNNNN_YYYYMMDDTHHMMSS"]
-		self.polygons = [] #[{"type":"Polygon","coordinates":[[[]]]}]
-
-
-	def parse_parameters(self):
-		'''
-		Set bands, cloudCover, startDate, completionDate, lon and lat or geometry
-		'''
-		#check file exists here instead...
-
-		try:
-			with open(self.input_yaml,'r') as fp:
-				yaml_data = yaml.safe_load(fp)
-		except FileNotFoundError:
-			print(f"File {self.input_yml} not found.")
-		except yaml.YAMLError as e:
-			print(f"Error parsing YAML: {e}")
-		self.parameters = yaml_data
-
-
-	def check_parameters(self):
-		'''
-		Check parameters are correct and skip if missing.
-		Set a minimum number of parameters for a reasonable search.
-		'''
-
-		#1. cloud cover
-		if "cloudCover" in self.parameters:
-
-			self.cloudCover = self.parameters['cloudCover']
-		else:
-			self.cloudCover = "[0,5]"
-
-		#2. dates and date format
-		if "startDate" in self.parameters:
-		else:
-
-		if "completionDate" in self.parameters:
-
-		else:
-
-		#3.aoi
-		# Set in an order useful for user feedback I suppose...
-		if ("lon" in self.parameters and "lat" self.parameters) or "geometry" in self.parameters:
-			#check lon,lat
-
-			#check geometry
-		else:
-			#error
-			print("Search area not defined. Set 'geometry' or 'lon' and 'lat' \
-				in the configuration yaml file.")
-
-
-		#4. bands
-
-	def check_rclone_credentials(self):
-		'''
-		Do this without stdout.?
-		'''
-		pass
-
-
-	def download_metadata(self):
-		'''
-		Download MTD.xml for all in product_list
-		'''
-		#Make directories
-		# for folder in self.titles:
-			# os.mkdir(f"{self.out_dir}/{folder}")
-
-		#Set download list
-		remote_paths = [f"{path}/MTD_*.xml" for path in self.s3_ids]
-
-		#Write temp list file
-		temp_path = f"{self.out_dir}/mtd_temp.txt"
-		with open(temp_path,'w') as fp:
-			fp.writelines(remote_paths)
-
-		#Download
-		proc0 = sp.run([
-			"rclone","copy",
-			"--include-from",temp_path,
-			"esa:",self.out_dir,"-P",
-			"--transfers",RCLONE_MAX,"--dry-run"])
-
-		#delete temp list
-		os.remove(temp_path)
-
-
-	def parse_xml(self,path):
-		'''
-		parse a MTD_MSIL2A.xml
-		'''
-		# get datastrip and granule
-		root      = ET.parse(path).getroot()
-		prod_info = root.find('n1:General_Info',namespaces=mtd_ns).find('Product_Info')
-		granule   = prod_info.find('Product_Organisation').find('Granule_List').find('Granule')
-		datastrip = granule.attrib['datastripIdentifier'].split('_')[-2][1:]
-		return granule,datastrip
-
-
-	def build_intermediate_dir(self):
-		'''
-		Intermediate folder containing the band images.
-		'''
-		for product in self.titles:
-			granule,datastrip = self.parse_xml(f"{DATA_DIR}/{product}/MTD_MSIL2A.xml")
-			date = product[11:26]
-			tile = product[38:44]
-			subdir = f"L2A_{tile}_{granule}_{datastrip}"
-			self.subdirs.append(subdir)
-
-
-	def search(self):
-
-		#First request
-		resp = requests.get(OPENS_BASE_URL,params=self.payload) #HTTPs request
-
-		#Check response 200
-		if resp.status_code != 200: #check correct response
-			print(resp.text)
-			return
-		#404:Not found: incorrect base uri
-		#400:Bad request: incorrect query
-
-
-		#string to dict
-		resp_json = resp.json()
-		print("%i products found." % len(resp_json['features']))
-
-		#200 but features len() 0
-		if len(resp_json['features']) == 0:
-			return
-
-		while True:
-
-			#parse page
-			for f in resp_json['features']:
-				self.polygons.append(f['geometry'])
-				self.titles.append(f['properties']['title'])
-				self.s3_ids.append(f['properties']['productIdentifier'])
-				# self.cloudcov.append(f['properties']['cloudCover'])
-				# self.snowcov.append(f['properties']['snowCover'])
-
-			tags  = [l['rel'] for l in resp_json['properties']['links']]
-
-			#no more pages?
-			if 'next' not in tags:
-				break
-
-			#else, get next page
-			next_page = resp_json['properties']['links'][tags.index('next')]['href']
-			resp      = requests.get(next_page)
-			resp_json = resp.json()
-			self.page += 1
-
-		#good enough...
-
-
-	def download(self):
-		
-		#prepare metadata
-		self.download_metadata()
-		self.build_intermediate_dir()
-
-		#write temp
-
-		#download
-
-		#delete temp
-
-
-if __name__ == '__main__':
-
-	D = Downloader("../sample.yml")
-
-
-
-
 
 
 ######################################
