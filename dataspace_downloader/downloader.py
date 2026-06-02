@@ -5,70 +5,15 @@ import xml.etree.ElementTree as ET
 import requests
 import argparse
 import multiprocessing
-import subprocess
+import subprocess as sp
 # from tqdm import tqdm
 import time
-
-"""
-$filter=Collection/Name eq 'SENTINEL-2'
-
-$filter=ContentDate/Start gt 2019-05-15T00:00:00.000Z and ContentDate/Start lt 2019-05-16T00:00:00.000Z
-
-$filter=OData.CSC.Intersects(area=geography'SRID=4326;POLYGON((
-12.655118166047592 47.44667197521409,21.39065656328509 48.347694733853245,
-28.334291357162826 41.877123516783655,17.47086198383573 40.35854475076158,
-12.655118166047592 47.44667197521409))') 
-and ContentDate/Start gt 2022-05-20T00:00:00.000Z and ContentDate/Start lt 2022-05-21T00:00:00.000Z
-
-$filter=OData.CSC.Intersects(area=geography'SRID=4326;POINT(-0.5319577002158441 28.65487836189358)')
- and Collection/Name eq 'SENTINEL-1'
- &$top=20
-
- $filter=Collection/Name eq 'SENTINEL-2'
-  and Attributes/OData.CSC.DoubleAttribute/any(att:att/Name eq 'cloudCover' and att/OData.CSC.DoubleAttribute/Value le 40.00)
-
-
-Collection/Name%20eq%20%27SENTINEL-2%27
-%20and%20
-Attributes/OData.CSC.DoubleAttribute/any(att:att/Name%20eq%20%27cloudCover%27%20and%20att/OData.CSC.DoubleAttribute/Value%20lt%2010.00)
-%20and%20
-Attributes/OData.CSC.StringAttribute/any(att:att/Name%20eq%20%27productType%27%20and%20att/OData.CSC.StringAttribute/Value%20eq%20%27S2MSI2A%27)
-%20and%20
-ContentDate/Start%20gt%202022-05-03T00:00:00.000Z
-%20and%20
-ContentDate/Start%20lt%202022-05-03T04:00:00.000Z
-&$top=10
-
-$orderby=ContentDate/Start desc
-
-$skip=20
-
-if "@OData.nextLink" in resp, follow to next page. Same level as @odata.context and "value":[]
-
-"@odata.count" has overall count.
-
------
-For each item in value [], get
-""
-"Name"
-"S3Path"
-"Footprint"
-"""
 
 ####################################################################################################
 # GLOBAL
 ####################################################################################################
-ODATA_BASE_URL = "https://catalogue.dataspace.copernicus.eu/odata/v1/Products?"
-# ODATA_BASE_URL = "https://catalogue.dataspace.copernicus.eu/odata/v1/Products?$filter="
-# ODATA_BASE_URL = "https://catalogue.dataspace.copernicus.eu/odata/v1/Products?$filter=Collection/Name eq 'SENTINEL-2"
 
-mtd_namespace = {
-	'n1':"https://psd-14.sentinel2.eo.esa.int/PSD/User_Product_Level-2A.xsd",
-	'other':"http://www.w3.org/2001/XMLSchema-instance",
-	'another':"https://psd-14.sentinel2.eo.esa.int/PSD/User_Product_Level-2A.xsd"
-}
 
-RCLONE_MAX = 16
 ####################################################################################################
 # CLASSES
 ####################################################################################################
@@ -78,42 +23,50 @@ class Downloader():
 	"""
 	def __init__(self,input_yaml,out_dir):
 
+		#CHECK ARGS
+		if not os.path.isfile(input_yaml):
+			print("Input YAML file not found in path given.")
+			raise FileNotFoundError
 		self.input_yaml = input_yaml
-		self.out_dir    = out_dir
+
+		if not os.path.isdir(out_dir):
+			print("Output dir not found.")
+			raise FileNotFoundError
+		if out_dir[-1] == '/':
+			out_dir = out_dir[0:-1]
+		self.out_dir = out_dir
 
 		#SATELLITE PARAMETERS
 		self.instrument  = "MSI"
 		self.productType = "S2MSI2A"
 		self.sensorMode  = None #some "null" some INS-NOBS for S2 ¿?
-		self.bands       = None									#<--- INPUT YAML
+		self.bands       = None							   	     #<--- INPUT YAML
 
 		#AOI PARAMETERS
-		self.cloudCover     = None #e.g. [0,10] 				#<--- INPUT YAML
-		self.startDate      = None #e.g. 2021-10-01T21:37:00Z 	#<--- INPUT YAML
-		self.completionDate = None 								#<--- INPUT YAML
-		self.lon            = None #EPSG:4326 e.g. 21.01 		#<--- INPUT YAML
-		self.lat            = None 								#<--- INPUT YAML
-		self.geometry       = None 								#<--- INPUT YAML
-		self.box            = None #&box=west,south,east,north
-		self.radius         = None 
+		self.cloudCover     = None #e.g. 10.00 				      #<--- INPUT YAML
+		self.startDate      = None #e.g. 2021-10-01T21:37:00.000Z #<--- INPUT YAML
+		self.endDate        = None 								  #<--- INPUT YAML
+		self.lon            = None #EPSG:4326 e.g. 21.01 		  #<--- INPUT YAML
+		self.lat            = None 								  #<--- INPUT YAML
+		self.geometry       = None 								  #<--- INPUT YAML
 
 		#JSON RETURN PARAMETERS
-		self.maxRecords = 20
-		self.page       = 0 #current page, 1-indexed
+		self.maxRecords = 50
 		self.sortParam  = "startDate"
 		self.sortOrder  = "ascending"
 
-		# LOAD SEARCH PARAMETERS/YAML
+		#SEARCH PARAMETERS/YAML
 		self.file_parameters = None
 		self.parse_yaml()
 		self.check_yaml_inputs()
-
-
-		#DATA/ITERATION OBJECTS
-		self.titles   = [] #["*.SAFE"]
+		self.query    = None
+		self.names    = [] #["*.SAFE"]
 		self.s3_ids   = [] #["/eodata/Sentinel-2/MSI/.../*.SAFE"]
-		self.subdirs  = [] #["L2A_TNNLLL_ANNNNNN_YYYYMMDDTHHMMSS"]
 		self.polygons = [] #[{"type":"Polygon","coordinates":[[[]]]}]
+
+		#DOWNLOAD PARAMETERS
+		self.RCLONE_MAX = "16"
+		self.ODATA_BASE_URL = "https://catalogue.dataspace.copernicus.eu/odata/v1/Products?"
 
 
 	def parse_yaml(self):
@@ -126,7 +79,7 @@ class Downloader():
 			with open(self.input_yaml,'r') as fp:
 				yaml_data = yaml.safe_load(fp)
 		except FileNotFoundError:
-			print(f"File {self.input_yml} not found.")
+			print(f"File {self.input_yaml} not found.")
 		except yaml.YAMLError as e:
 			print(f"Error parsing YAML: {e}")
 		self.file_parameters = yaml_data
@@ -148,18 +101,20 @@ class Downloader():
 		if "startDate" in self.file_parameters:
 			self.startDate = self.file_parameters['startDate']
 
-		if "completionDate" in self.file_parameters:
-			self.completionDate = self.file_parameters['completionDate']
+		if "endDate" in self.file_parameters:
+			self.endDate = self.file_parameters['endDate']
 
 		#3.aoi -- Set in order useful for user feedback
 		# check lon,lat
-		if ("lon" in self.file_parameters and "lat" self.file_parameters):
+		if ("lon" in self.file_parameters and "lat" in self.file_parameters):
 			self.lon = self.file_parameters['lon']
 			self.lat = self.file_parameters['lat']
 
 		#check geometry
 		if "geometry" in self.file_parameters:
 			self.geometry = self.file_parameters['geometry']
+			if self.geometry[0] == "'":
+				self.geome
 
 		if self.geometry==None and self.lon==None and self.lat==None:
 			#nothing set
@@ -171,16 +126,9 @@ class Downloader():
 			self.bands = self.file_parameters['bands']
 
 
-	def check_rclone_credentials(self):
-		'''
-		Do this without stdout.?
-		'''
-		pass
-
-
 	def download_metadata(self):
 		'''
-		Download MTD.xml for all in product_list
+		DEPRECATED.
 		'''
 		#Set download list
 		remote_paths = [f"{path}/MTD_*.xml" for path in self.s3_ids]
@@ -203,8 +151,14 @@ class Downloader():
 
 	def parse_xml(self,path):
 		'''
-		parse a MTD_MSIL2A.xml
+		DEPRECATED.
 		'''
+		mtd_namespace = {
+			'n1':"https://psd-14.sentinel2.eo.esa.int/PSD/User_Product_Level-2A.xsd",
+			'other':"http://www.w3.org/2001/XMLSchema-instance",
+			'another':"https://psd-14.sentinel2.eo.esa.int/PSD/User_Product_Level-2A.xsd"
+		}
+
 		# get datastrip and granule
 		root      = ET.parse(path).getroot()
 		prod_info = root.find('n1:General_Info',namespaces=mtd_namespace).find('Product_Info')
@@ -213,303 +167,123 @@ class Downloader():
 		return granule,datastrip
 
 
-	def build_intermediate_dir(self):
-		'''
-		Intermediate folder containing the band images.
-		'''
-		for product in self.titles:
-			granule,datastrip = self.parse_xml(f"{DATA_DIR}/{product}/MTD_MSIL2A.xml")
-			date = product[11:26]
-			tile = product[38:44]
-			subdir = f"L2A_{tile}_{granule}_{datastrip}"
-			self.subdirs.append(subdir)
-
-
 	def build_odata_query(self):
+		'''
+		Method to set up an OData query for CDSE. Takes previously loaded parameters.
+		'''
+		#Filters
+		collection  = "Collection/Name eq 'SENTINEL-2'"
+		producttype = f"Attributes/OData.CSC.StringAttribute/any(att:att/Name eq 'productType'" \
+						f" and att/OData.CSC.StringAttribute/Value eq '{self.productType}')"
+		aoi         = f"OData.CSC.Intersects(area=geography'SRID=4326;{self.geometry}')"
+		clouds      = f"Attributes/OData.CSC.DoubleAttribute/any(att:att/Name eq 'cloudCover'" \
+						f" and att/OData.CSC.DoubleAttribute/Value le {self.cloudCover})"
+		date_start  = f"ContentDate/Start gt {self.startDate}"
+		date_final  = f"ContentDate/Start lt {self.endDate}"
 
-		collection = "Collection/Name eq 'SENTINEL-2'"
-		producttype = f"Attributes/OData.CSC.StringAttribute/any(att:att/Name eq 'productType' and att/OData.CSC.StringAttribute/Value eq '{self.productType}')" 
-		aoi = f"OData.CSC.Intersects(area=geography'SRID=4326;{self.geometry}')"
-		clouds = f"Attributes/OData.CSC.DoubleAttribute/any(att:att/Name eq 'cloudCover' and att/OData.CSC.DoubleAttribute/Value le {self.cloudCover})"
-		date_start = f"ContentDate/Start gt {self.startDate}"
-		date_final = f"ContentDate/Start lt {self.completionDate}"
-
+		#Join filters
 		filters_str = " and ".join([collection,producttype,aoi,clouds,date_start,date_final])
 
+		#Join query params
 		req_filter = f"$filter={filters_str}"
 		req_top    = f"$top={self.maxRecords}"
-		req_skip   = f"$skip={self.page}"
+		req_skip   = f"$skip=0"
 		req_count  = "$count=True"
 		req_order  = "$orderby=ContentDate/Start desc"
+		req = "&".join([req_filter,req_top,req_skip,req_order,req_count])
 
-		req_final = "&".join([req_filter,req_top,req_skip,req_count])
-
-
-	def search_odata(self):
-		pass
+		self.query = self.ODATA_BASE_URL + req
+		return self.query
 
 
-	def search(self):
+	def search_odata(self,query=None):
+		#Get first page
+		req  = self.build_odata_query()
+		resp = requests.get(req)
 
-		#First request
-		resp = requests.get(OPENS_BASE_URL,params=self.payload) #HTTPs request
-
-		#Check response 200
-		if resp.status_code != 200: #check correct response
+		#Check response
+		if resp.status_code !=200:
 			print(resp.text)
 			return
-		#404:Not found: incorrect base uri
-		#400:Bad request: incorrect query
 
-
-		#string to dict
+		#convert to json
 		resp_json = resp.json()
-		print("%i products found." % len(resp_json['features']))
+		print(f"Products found: {resp_json['@odata.count']}.")
 
-		#200 but features len() 0
-		if len(resp_json['features']) == 0:
+		#No matching results
+		if resp_json['@odata.count'] == 0:
 			return
 
+		#handle page count
+		n_pages = resp_json['@odata.count'] // self.maxRecords
+		if resp_json['@odata.count'] % self.maxRecords > 0:
+			n_pages += 1
+		current_page = 1
+		print(f"Retrieving pages [{current_page}/{n_pages}.]")
+
+		#iterate through pages
 		while True:
 
-			#parse page
-			for f in resp_json['features']:
-				self.polygons.append(f['geometry'])
-				self.titles.append(f['properties']['title'])
-				self.s3_ids.append(f['properties']['productIdentifier'])
-				# self.cloudcov.append(f['properties']['cloudCover'])
-				# self.snowcov.append(f['properties']['snowCover'])
+			#store entries
+			for entry in resp_json['value']:
+				self.names.append(entry['Name'])
+				self.polygons.append(entry['Footprint'])
+				self.s3_ids.append(entry['S3Path'])
 
-			tags  = [l['rel'] for l in resp_json['properties']['links']]
-
-			#no more pages?
-			if 'next' not in tags:
+			# more pages?
+			if "@odata.nextLink" not in resp_json:
 				break
 
-			#else, get next page
-			next_page = resp_json['properties']['links'][tags.index('next')]['href']
+			# Get next page
+			next_page = resp_json['@odata.nextLink']
 			resp      = requests.get(next_page)
 			resp_json = resp.json()
-			self.page += 1
 
-		#good enough...
+			#stdout			
+			current_page += 1
+			print(f"Retrieving pages [{current_page}/{n_pages}].")
+
+
+		#LOG THE SEARCH -- links
+		log = [f"{product}\t{s3}" for product,s3 in zip(self.names,self.s3_ids)]
+		with open(f"{self.out_dir}/search_results.tsv",'w') as fp:
+			fp.write("\n".join(log))
+
+		#LOG THE SEARCH -- geo
+		log = [f"{product}\t{poly}" for product,poly in zip(self.names,self.polygons)]
+		with open(f"{self.out_dir}/search_results_geometries.tsv",'w') as fp:
+			fp.write("\n".join(log))
+
+		return
 
 
 	def download(self):
-		
-		#Make directories
-		for folder in self.titles:
-			os.mkdir(f"{self.out_dir}/{folder}")
+		'''
+		Use metadata stored in Downloader object and retrieve products via S3.
+		'''
+		#write temp .txt to store download pattern list
+		remote_paths = [f"{s3folder}/GRANULE/*/IMG_DATA/R10m/*_B*.jp2" for s3folder in self.s3_ids]
 
-		#prepare metadata
-		self.download_metadata()
-		self.build_intermediate_dir()
-
-		#write temp
+		#Write temp list file
+		temp_file = f"{self.out_dir}/download_queue.txt"
+		with open(temp_file,'w') as fp:
+			fp.write(str("\n".join(remote_paths)))
 
 		#download
+		proc0 = sp.run([
+			"rclone","copy",
+			"--include-from",temp_file,
+			"esa:",self.out_dir,"-P",
+			"--transfers",self.RCLONE_MAX,"--dry-run"])
 
-		#delete temp
+		#This downloads whole structure, so something like this is needed:
+		#find ./eodata/Sentinel-2/MSI/L2A -type d -name "*.SAFE" -exec cp -r {} . \;
+		#or mv ./**/*.SAFE .
 
 
 if __name__ == '__main__':
+	pass
+	D = Downloader("../sample.yml","../../testS2download")
+	D.search_odata()
+	D.download()
 
-	D = Downloader("../sample.yml")
-
-
-
-
-
-"""
-# BASE QUERY
-	http://catalogue.dataspace.copernicus.eu/resto/api/collections/search.json?
-
-# COLLECTIONS
-Collections serve as a way to filter products corresponding to particular satellite.
-For example, the query
-
-	https://catalogue.dataspace.copernicus.eu/resto/api/collections/search.json?
-	cloudCover=[0,10]&
-	startDate=2022-06-11T00:00:00Z&
-	completionDate=2022-06-22T23:59:59Z&
-	maxRecords=10"
-
-returns the most 10 most recent products matching the dates and with less than 10% cloud cover
-in all collections, that is, products from all satellites.
-
-Instead, the following query will return the ten most recent Sentinel-2 products with less 
-than 10% cloud cover:
-
-	http://catalogue.dataspace.copernicus.eu/resto/api/collections/Sentinel2/search.json?
-	cloudCover=[0,10]&
-	startDate=2022-06-11T00:00:00Z&
-	completionDate=2022-06-22T23:59:59Z&
-	maxRecords=10"
-
-The name of the collections for each satellite are:
-	- Sentinel1
-	- Sentinel2
-	- Sentinel3
-	- Sentinel5P
-
-# SORTING AND LIMITING
-
-	http://catalogue.dataspace.copernicus.eu/resto/api/collections/Sentinel2/search.json?
-	startDate=2021-07-01T00:00:00Z&
-	completionDate=2021-07-31T23:59:59Z&
-	sortParam=startDate&
-	maxRecords=20
-
-
-	http://catalogue.dataspace.copernicus.eu/resto/api/collections/Sentinel2/search.json?
-	startDate=2021-07-01T00:00:00Z&
-	completionDate=2021-07-31T23:59:59Z&
-	sortParam=startDate&
-	maxRecords=20&
-	page=2
-
-	Other parameters are:
-		- maxRecords=nnn
-		- page=nnn
-
-
-	Different sortings
-	- sortParam=startDate
-	- sortParam=completionDate
-	- sortParam=published
-
-	sortOrder=ascending or sortOrder=descending
-
-
-# FORMAL QUERIES
-	https://catalogue.dataspace.copernicus.eu/resto/api/collections/Sentinel2/search.json?
-	cloudCover=[0,10]&
-	startDate=2021-06-21T00:00:00Z&
-	completionDate=2021-09-22T23:59:59Z&
-	lon=21.01&
-	lat=52.22
-
-# GEOGRAPHY AND TIME-FRAME
-- startDate, completionDate
-- lon,lat:  EPSG:4326 decimal degrees
-- radius:   meters to centre defined by lon and lat.
-- geometry: POINT, POLYGON
-- box: box=west,south,east,north
-
-	https://catalogue.dataspace.copernicus.eu/resto/api/collections/Sentinel2/search.json?
-	cloudCover=[0,10]&
-	startDate=2022-06-11T00:00:00Z&
-	completionDate=2022-06-22T23:59:59Z&
-	maxRecords=10&
-	box=-1,1,-1,1
-
-	https://catalogue.dataspace.copernicus.eu/resto/api/collections/Sentinel2/search.json?
-	cloudCover=[0,10]&
-	startDate=2022-06-11T00:00:00Z&
-	completionDate=2022-06-22T23:59:59Z&
-	maxRecords=10&
-	box=-21,23,-24,15
-
-#SATELLITE FEATURES
-- instrument
-- productType
-- sensorMode
-- orbitDirection
-- resolution
-- status: ONLINE, OFFLINE
-
-A complete set of query-able parameters for each satellite can be obtained from
-	https://catalogue.dataspace.copernicus.eu/resto/api/collections/Sentinel1/describe.xml
-	https://catalogue.dataspace.copernicus.eu/resto/api/collections/Sentinel2/describe.xml
-	https://catalogue.dataspace.copernicus.eu/resto/api/collections/Sentinel3/describe.xml
-	https://catalogue.dataspace.copernicus.eu/resto/api/collections/Sentinel5P/describe.xml	
-"""
-
-
-######################################
-######################################
-######################################
-#DON'T NEED THESE ANYMORE
-######################################
-######################################
-######################################
-# TOKEN_URL="https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token"
-# D.set_keycloak(username,password)
-
-# 	#API ACCESS
-# 	self.access_token  = None
-# 	self.refresh_token = None 
-
-# 	#OBJECT SEARCH PARAMETERS
-# 	self.coord_list = None
-# 	self.parameters = None
-# 	self.query      = None
-# 	self.session    = None
-
-# def set_auth_from_env(self,USER_VAR,PASS_VAR):
-# 	"""
-# 	Set the object's username and password used by the access token to a given environment 
-# 	variable.
-# 	"""
-# 	try:
-# 		self.username = os.getenv(USER_VAR)
-# 	except:
-# 		print("Error setting username to env variable.")
-# 	try:
-# 		self.password = os.getenv(PASS_VAR)
-# 	except:
-# 		print("Error setting passwrod to env variable.")
-
-
-# def set_access_token(self, username: str, password: str) -> str:
-# 	'''
-# 	The equivalent curl request is:
-
-# 	curl --location --request POST \
-# 	'https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token' \
-# 	  --header 'Content-Type: application/x-www-form-urlencoded' \
-# 	  --data-urlencode 'grant_type=password' \
-# 	  --data-urlencode 'username=<USERNAME>' \
-# 	  --data-urlencode 'password=<PASSWORD>' \
-# 	  --data-urlencode 'client_id=cdse-public'
-# 	'''
-
-# 	data = {
-#         "client_id":  "cdse-public",
-#         "username":   self.username,
-#         "password":   self.password,
-#         "grant_type": "password",
-#     	}
-
-# 	try:
-# 		r = requests.post(TOKEN_URL,data=data)
-# 		r.raise_for_status()
-
-# 	except Exception as e:
-# 		raise Exception(
-# 		    f"Keycloak token creation failed. Reponse from the server was: {r.json()}"
-# 		)
-
-# 	self.access_token  = r.json()["access_token"]
-#     self.refresh_token = r.json()["refresh_token"]
-
-
-# def regenerate_access_token(self):
-# 	'''		
-# 	curl --location --request POST \
-# 	'https://identity.dataspace.copernicus.eu/auth/realms/CDSE/protocol/openid-connect/token' \
-# 	  --header 'Content-Type: application/x-www-form-urlencoded' \
-# 	  --data-urlencode 'grant_type=<refresh_token>' \
-# 	  --data-urlencode 'refresh_token=<REFRESH_TOKEN>' \
-# 	  --data-urlencode 'client_id=cdse-public'
-# 	''' 
-# 	data = {
-# 		"client_id": "cdse-public",
-# 		"grant_type": "refresh_token",
-# 		"refresh_token": self.refresh_token
-# 	}
-
-# 	r = requests.post(TOKEN_URL,data=data)
-# 	#CHECK resp content
-
-# 	self.access_token = None	
