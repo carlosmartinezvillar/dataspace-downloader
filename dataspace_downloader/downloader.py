@@ -6,13 +6,7 @@ import requests
 import argparse
 import multiprocessing
 import subprocess as sp
-# from tqdm import tqdm
 import time
-
-####################################################################################################
-# GLOBAL
-####################################################################################################
-
 
 ####################################################################################################
 # CLASSES
@@ -105,7 +99,7 @@ class Downloader():
 			self.endDate = self.file_parameters['endDate']
 
 		#3.aoi -- Set in order useful for user feedback
-		# check lon,lat
+		# check lon,lat -- if given set to
 		if ("lon" in self.file_parameters and "lat" in self.file_parameters):
 			self.lon = self.file_parameters['lon']
 			self.lat = self.file_parameters['lat']
@@ -113,13 +107,11 @@ class Downloader():
 		#check geometry
 		if "geometry" in self.file_parameters:
 			self.geometry = self.file_parameters['geometry']
-			if self.geometry[0] == "'":
-				self.geome
+		#missing format check <----	
 
 		if self.geometry==None and self.lon==None and self.lat==None:
 			#nothing set
-			print("Search area not defined. Set 'geometry' or 'lon' and 'lat' \
-				in the configuration yaml file.")
+			print("Search area not set. Check 'geometry' or 'lon','lat' in input yaml file.")
 
 		#4. bands
 		if "bands" in self.file_parameters:
