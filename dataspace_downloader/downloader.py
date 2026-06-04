@@ -45,7 +45,7 @@ class Downloader():
 		self.geometry       = None 								  #<--- INPUT YAML
 
 		#JSON RETURN PARAMETERS
-		self.maxRecords = 50
+		self.maxRecords = 100
 		self.sortParam  = "startDate"
 		self.sortOrder  = "ascending"
 
@@ -61,6 +61,7 @@ class Downloader():
 		#DOWNLOAD PARAMETERS
 		self.RCLONE_MAX = "16"
 		self.ODATA_BASE_URL = "https://catalogue.dataspace.copernicus.eu/odata/v1/Products?"
+		self.s3_band_paths = []
 
 
 	def parse_yaml(self):
@@ -211,10 +212,12 @@ class Downloader():
 		if resp_json['@odata.count'] % self.maxRecords > 0:
 			n_pages += 1
 		current_page = 1
-		print(f"Retrieving pages [{current_page}/{n_pages}.]")
 
 		#iterate through pages
 		while True:
+
+			#stdout
+			print(f"Retrieving pages [{current_page}/{n_pages}]")
 
 			#store entries
 			for entry in resp_json['value']:
@@ -229,11 +232,14 @@ class Downloader():
 			# Get next page
 			next_page = resp_json['@odata.nextLink']
 			resp      = requests.get(next_page)
-			resp_json = resp.json()
 
-			#stdout			
+			if resp.status_code !=200:
+				print("STATUS CODE!=200.")
+				print(resp.text)
+				break
+
+			resp_json = resp.json()			
 			current_page += 1
-			print(f"Retrieving pages [{current_page}/{n_pages}].")
 
 
 		#LOG THE SEARCH -- links
@@ -246,6 +252,16 @@ class Downloader():
 		with open(f"{self.out_dir}/search_results_geometries.tsv",'w') as fp:
 			fp.write("\n".join(log))
 
+		#LOG DOWNLOAD QUEUE -- include files for S3 client (rclone)
+		for s3folder in self.s3_ids:
+			for band in self.bands:
+				self.s3_band_paths.append(f"{s3folder}/GRANULE/*/IMG_DATA/R10m/*_{band}.jp2")
+
+		temp_file = f"{self.out_dir}/download_queue.txt"
+		with open(temp_file,'w') as fp:
+			fp.write(str("\n".join(self.s3_band_paths)))
+
+
 		return
 
 
@@ -253,18 +269,12 @@ class Downloader():
 		'''
 		Use metadata stored in Downloader object and retrieve products via S3.
 		'''
-		#write temp .txt to store download pattern list
-		remote_paths = [f"{s3folder}/GRANULE/*/IMG_DATA/R10m/*_B*.jp2" for s3folder in self.s3_ids]
-
-		#Write temp list file
-		temp_file = f"{self.out_dir}/download_queue.txt"
-		with open(temp_file,'w') as fp:
-			fp.write(str("\n".join(remote_paths)))
+		queue_file = f"{self.out_dir}/download_queue.txt"
 
 		#download
 		proc0 = sp.run([
 			"rclone","copy",
-			"--include-from",temp_file,
+			"--include-from",queue_file,
 			"esa:",self.out_dir,"-P",
 			"--transfers",self.RCLONE_MAX,"--dry-run"])
 
